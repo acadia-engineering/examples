@@ -1,0 +1,272 @@
+database module Backend exposing
+  ( endpoint addFood
+  , endpoint getFoods
+  --
+  , endpoint addUser
+  , endpoint login
+  , endpoint logout
+  )
+
+
+import Cookies exposing (Cookies)
+import Password
+import Rows exposing (..)
+import Security exposing (Unrestricted(..))
+import Sequence as Seq exposing (Sequence)
+import Table exposing (..)
+import Time exposing (Unit(..))
+import Transaction as T exposing (succeed)
+import Uuid exposing (Uuid)
+
+
+
+-- FOODS
+
+
+type alias Food =
+  { id : FoodID
+  , name : String
+  , owner : UserID
+  }
+
+
+type FoodID = FoodID UInt64
+
+
+foods : Table UserID Food
+foods :=
+  table
+    { primary = .id
+    , indexes = []
+    , constraints = []
+    , security =
+        Security.policy
+          { access = \user food ->
+              user == food.owner
+
+          , insert = \user food ->
+              user == food.owner
+
+          , update = \user before after ->
+              user == before.owner
+              && before.owner == after.owner
+              && before.id == after.id
+
+          , remove = \user food ->
+              user == food.owner
+          }
+    }
+
+
+foodIDs : Sequence FoodID
+foodIDs :=
+  Seq.uint64 FoodID
+
+
+
+-- ADD FOOD
+
+
+addFood : Cookies -> String -> Transaction ()
+addFood cookies name =
+  let
+    userID := requireCookie cookies
+    foodID := Seq.next foodIDs
+  in
+  insert foods userID
+    { id = foodID
+    , name = name
+    , owner = userID
+    }
+
+
+
+-- GET FOODS
+
+
+getFoods : Cookies -> Transaction (Rows String)
+getFoods cookies =
+  let
+    userID := requireCookie cookies
+  in
+  access foods userID
+    |> map .name
+    |> selectAll
+
+
+
+--------------------------------------------------------------------------------
+-- SESSION MANAGEMENT ----------------------------------------------------------
+--------------------------------------------------------------------------------
+
+
+-- USERS TABLE
+
+
+type alias User =
+  { id : UserID
+  , name : String
+  , pw_hash : Password.Hash
+  , created : Time.Posix
+  }
+
+
+type UserID = UserID UInt64
+
+
+users : Table Unrestricted User
+users :=
+  table
+    { primary = .id
+    , security = Security.unrestricted
+    , indexes = []
+    , constraints = []
+    }
+
+
+userIDs : Sequence UserID
+userIDs :=
+  Seq.uint64 UserID
+
+
+
+-- SESSIONS TABLE
+
+
+type alias Session =
+  { cookie : SessionSecret
+  , user : UserID
+  , expires : Time.Posix
+  }
+
+
+type SessionSecret =
+  SessionSecret Uuid
+
+
+sessions : Table Unrestricted Session
+sessions :=
+  table
+    { primary = .cookie
+    , security = Security.unrestricted
+    , indexes = []
+    , constraints = []
+    }
+
+
+
+--------------------------------------------------------------------------------
+-- SESSION ENDPOINTS -----------------------------------------------------------
+--------------------------------------------------------------------------------
+
+
+
+-- ADD USER
+--
+-- Create user, add one transaction, and add default tags.
+
+
+addUser : Cookies -> String -> String -> Transaction Cookies.Header
+addUser _ name password =
+  let
+    userID  := Seq.next userIDs
+    created := Time.now
+    secret  := Uuid.generate SessionSecret
+    hash    := Password.bcrypt password
+
+    () :=
+      insert users Unrestricted
+        { id = userID
+        , name = name
+        , pw_hash = hash
+        , created = created
+        }
+
+    () :=
+      insert sessions Unrestricted
+        { cookie = secret
+        , user = userID
+        , expires = Time.plus 15 Minutes created
+        }
+  in
+  succeed (toCookie secret)
+
+
+
+-- LOGIN
+--
+-- TODO get rid of old sessions
+
+
+login : Cookies -> String -> String -> Transaction Cookies.Header
+login _ name password =
+  let
+    user :=
+      access users Unrestricted
+        |> filter (\u -> u.name == name && Password.verify u.pw_hash password)
+        |> select
+
+    created := Time.now
+    secret  := Uuid.generate SessionSecret
+
+    () :=
+      insert sessions Unrestricted
+        { cookie = secret
+        , user = user.id
+        , expires = Time.plus 15 Minutes created
+        }
+  in
+  succeed (toCookie secret)
+
+
+
+-- LOGOUT
+
+
+logout : Cookies -> Transaction Cookies.Header
+logout cookies =
+  case fromCookie cookies of
+    Nothing ->
+      succeed (Cookies.remove "u")
+
+    Just uuid ->
+      let
+        () := remove sessions Unrestricted (\s -> s.cookie == uuid)
+      in
+      succeed (Cookies.remove "u")
+
+
+
+-- COOKIES
+
+
+toCookie : SessionSecret -> Cookies.Header
+toCookie (SessionSecret uuid) =
+  Cookies.set "u" (Uuid.toBase64 uuid) 15 Minutes
+
+
+fromCookie : Cookies -> Maybe SessionSecret
+fromCookie cookies =
+  Maybe.map SessionSecret <|
+    Cookies.get cookies "u" Uuid.fromBase64
+
+
+
+-- TABLE SECURITY
+
+
+requireCookie : Cookies -> Transaction UserID
+requireCookie cookies =
+  case fromCookie cookies of
+    Just uuid ->
+      let
+        time := Time.now
+      in
+      access sessions Unrestricted
+        |> filter (\s -> s.cookie == uuid && time < s.expires)
+        |> map .user
+        |> select
+
+    Nothing ->
+      Transaction.fail
+

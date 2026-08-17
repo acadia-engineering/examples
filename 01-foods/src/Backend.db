@@ -1,0 +1,67 @@
+database module Backend exposing
+  ( endpoint addFood
+  , endpoint getFoods
+  )
+
+
+import Cookies exposing (Cookies)
+import Rows exposing (..)
+import Security exposing (Unrestricted(..))
+import Sequence as Seq exposing (Sequence)
+import Table exposing (..)
+
+
+
+-- FOODS
+
+
+type alias Food =
+  { id : FoodID
+  , name : String
+  }
+
+
+type FoodID = FoodID UInt64
+
+
+foods : Table Unrestricted Food
+foods :=
+  table
+    { primary = .id
+    , security = Security.unrestricted
+    , indexes = []
+    , constraints = []
+    }
+
+
+foodIDs : Sequence FoodID
+foodIDs :=
+  Seq.uint64 FoodID
+
+
+
+-- ADD FOOD
+
+
+addFood : Cookies -> String -> Transaction ()
+addFood _ name =
+  let
+    id := Seq.next foodIDs
+  in
+  insert foods Unrestricted
+    { id = id
+    , name = name
+    }
+
+
+
+-- GET FOODS
+
+
+getFoods : Cookies -> Transaction (Rows String)
+getFoods _ =
+  access foods Unrestricted
+    |> map .name
+    |> selectAll
+
+
