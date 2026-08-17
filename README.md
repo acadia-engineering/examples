@@ -28,6 +28,12 @@ acadia serve --html=index.html
 
 This compiles the Acadia endpoints to Elm code in `gen/`, then compiles the Elm code to `index.html`, and then serves your database and frontend at [`http://localhost:9000`](http://localhost:9000).
 
+I like to run them as a one-liner so that I never forget a step:
+
+```bash
+acadia make --gen-elm=gen && elm make src/Main.elm && acadia serve --html=index.html
+```
+
 
 ## SQLite Files
 
