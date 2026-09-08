@@ -1,5 +1,5 @@
 {
     "source-directories": [
-        "src"
+        "src/database"
     ]
 }

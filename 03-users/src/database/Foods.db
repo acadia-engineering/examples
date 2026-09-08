@@ -1,0 +1,96 @@
+database module Foods exposing
+  ( Origin(..)
+  , endpoint addFood
+  , Info
+  , endpoint getFoods
+  )
+
+
+import Cookies exposing (Cookies)
+import Rows exposing (..)
+import Security exposing (Unrestricted(..))
+import Sequence as Seq exposing (Sequence)
+import Table exposing (..)
+
+import Users exposing (UserID)
+
+
+
+-- FOODS
+
+
+type alias Food =
+  { id : FoodID
+  , owner : UserID
+  , name : String
+  , origin : Origin
+  }
+
+
+type FoodID = FoodID UInt64
+
+
+type Origin
+  = Local
+  | Denmark
+  | Other String
+
+
+foods : Table UserID Food
+foods :=
+  table
+    { primary = .id
+    , indexes = []
+    , constraints = [ foreignKey .owner Users.referencesUserID ]
+    , security =
+        Security.policy
+          { access = \user food   -> food.owner == user
+          , insert = \user food   -> food.owner == user
+          , update = \user food _ -> food.owner == user
+          , remove = \user food   -> food.owner == user
+          }
+    }
+
+
+foodIDs : Sequence FoodID
+foodIDs :=
+  Seq.uint64 FoodID
+
+
+
+-- ADD FOOD
+
+
+addFood : Cookies -> String -> Origin -> Transaction ()
+addFood cookies name origin =
+  let
+    userID := Users.requireSession cookies
+    id := Seq.next foodIDs
+  in
+  insert foods userID
+    { id = id
+    , owner = userID
+    , name = name
+    , origin = origin
+    }
+
+
+
+-- GET FOODS
+
+
+type alias Info =
+  { name : String
+  , origin : Origin
+  }
+
+
+getFoods : Cookies -> Transaction (Rows Info)
+getFoods cookies =
+  let
+    userID := Users.requireSession cookies
+  in
+  access foods userID
+    |> map (\f -> Info f.name f.origin)
+    |> selectAll
+

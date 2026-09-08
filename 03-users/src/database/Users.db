@@ -1,126 +1,97 @@
-database module Backend exposing
-  ( endpoint addFood
-  , endpoint getFoods
+database module Users exposing
+  ( UserID
+  , referencesUserID
+  , requireSession
   --
-  , endpoint addUser
+  , Email(..)
+  , Password(..)
   , endpoint login
   , endpoint logout
+  --
+  , SessionSecret(..)
+  , Info
+  , endpoint lookup
+  --
+  , EmailSecret(..)
+  , endpoint signupInit
+  , endpoint signupDone
   )
 
 
 import Cookies exposing (Cookies)
 import Password
 import Rows exposing (..)
-import Security exposing (Unrestricted(..))
+import Security
 import Sequence as Seq exposing (Sequence)
 import Table exposing (..)
 import Time exposing (Unit(..))
-import Transaction as T exposing (succeed)
-import Uuid exposing (Uuid)
-
-
-
--- FOODS
-
-
-type alias Food =
-  { id : FoodID
-  , name : String
-  , owner : UserID
-  }
-
-
-type FoodID = FoodID UInt64
-
-
-foods : Table UserID Food
-foods :=
-  table
-    { primary = .id
-    , indexes = []
-    , constraints = []
-    , security =
-        Security.policy
-          { access = \user food ->
-              user == food.owner
-
-          , insert = \user food ->
-              user == food.owner
-
-          , update = \user before after ->
-              user == before.owner
-              && before.owner == after.owner
-              && before.id == after.id
-
-          , remove = \user food ->
-              user == food.owner
-          }
-    }
-
-
-foodIDs : Sequence FoodID
-foodIDs :=
-  Seq.uint64 FoodID
-
-
-
--- ADD FOOD
-
-
-addFood : Cookies -> String -> Transaction ()
-addFood cookies name =
-  let
-    userID := requireCookie cookies
-    foodID := Seq.next foodIDs
-  in
-  insert foods userID
-    { id = foodID
-    , name = name
-    , owner = userID
-    }
-
-
-
--- GET FOODS
-
-
-getFoods : Cookies -> Transaction (Rows String)
-getFoods cookies =
-  let
-    userID := requireCookie cookies
-  in
-  access foods userID
-    |> map .name
-    |> selectAll
+import Uuid
 
 
 
 --------------------------------------------------------------------------------
--- SESSION MANAGEMENT ----------------------------------------------------------
+-- USERS -----------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
 
--- USERS TABLE
+
+-- USERS
 
 
 type alias User =
   { id : UserID
-  , name : String
+  , email : Email
   , pw_hash : Password.Hash
   , created : Time.Posix
   }
 
 
 type UserID = UserID UInt64
+type Email = Email String
+type Password = Password String
 
 
-users : Table Unrestricted User
+type Token
+  = HasPassword Email Password
+  | HasSession UserID
+  | HasEmail Email EmailSecret
+
+
+users : Table Token User
 users :=
   table
     { primary = .id
-    , security = Security.unrestricted
     , indexes = []
     , constraints = []
+    , security =
+        Security.policy
+          { access = \token user ->
+              case token of
+                HasPassword email (Password pass) -> user.email == email && Password.verify user.pw_hash pass
+                HasSession id                     -> user.id == id
+                HasEmail email _                  -> user.email == email
+
+          , insert = \token user ->
+              case token of
+                HasPassword _ _  -> False
+                HasSession _     -> False
+                HasEmail email _ -> user.email == email
+
+          , update = \token before after ->
+              before.id == after.id
+              && before.created == after.created
+              &&
+              case token of
+                HasPassword _ _  -> False
+                HasSession id    -> before.id == id
+                HasEmail email _ -> before.email == email
+
+          , remove = \token user ->
+              case token of
+                HasPassword _ _ -> False
+                HasSession _    -> False
+                HasEmail _ _    -> False
+          }
     }
 
 
@@ -129,144 +100,284 @@ userIDs :=
   Seq.uint64 UserID
 
 
+referencesUserID : References UserID
+referencesUserID =
+  references users .id
 
--- SESSIONS TABLE
+
+
+-- PUBLIC INFO
+--
+-- Info that is okay to share with client code. Some details (like UserID)
+-- should not be made public. Revealing the sequence number would make it
+-- easier to guess the UserID of other people.
+
+
+type alias Info =
+  { email : Email
+  }
+
+
+toInfo : User -> Info
+toInfo user =
+  { email = user.email
+  }
+
+
+
+--------------------------------------------------------------------------------
+-- COOKIES ---------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+
+
+-- SESSIONS
 
 
 type alias Session =
-  { cookie : SessionSecret
+  { secret : SessionSecret
   , user : UserID
-  , expires : Time.Posix
+  , created : Time.Posix
   }
 
 
 type SessionSecret =
-  SessionSecret Uuid
+  SessionSecret Uuid.Uuid
 
 
-sessions : Table Unrestricted Session
+type SToken
+  = S_HasCookie SessionSecret Time.Posix
+  | S_HasLogin UserID
+
+
+sessions : Table SToken Session
 sessions :=
   table
-    { primary = .cookie
-    , security = Security.unrestricted
+    { primary = .secret
     , indexes = []
-    , constraints = []
+    , constraints = [ foreignKey .user referencesUserID ]
+    , security =
+        Security.policy
+          { access = \token session ->
+              case token of
+                S_HasCookie secret time -> session.secret == secret && Time.minus 14 Days time < session.created
+                S_HasLogin _            -> False
+
+          , insert = \token session ->
+              case token of
+                S_HasCookie _ _ -> False
+                S_HasLogin user -> session.user == user
+
+          , update = \token _ _ ->
+              case token of
+                S_HasCookie _ _ -> False
+                S_HasLogin _    -> False
+
+          , remove = \token session ->
+              case token of
+                S_HasCookie secret _ -> session.secret == secret
+                S_HasLogin _         -> False
+          }
     }
 
 
 
---------------------------------------------------------------------------------
--- SESSION ENDPOINTS -----------------------------------------------------------
---------------------------------------------------------------------------------
+-- USER ENDPOINTS
 
 
-
--- ADD USER
---
--- Create user, add one transaction, and add default tags.
-
-
-addUser : Cookies -> String -> String -> Transaction Cookies.Header
-addUser _ name password =
-  let
-    userID  := Seq.next userIDs
-    created := Time.now
-    secret  := Uuid.generate SessionSecret
-    hash    := Password.bcrypt password
-
-    () :=
-      insert users Unrestricted
-        { id = userID
-        , name = name
-        , pw_hash = hash
-        , created = created
-        }
-
-    () :=
-      insert sessions Unrestricted
-        { cookie = secret
-        , user = userID
-        , expires = Time.plus 15 Minutes created
-        }
-  in
-  succeed (toCookie secret)
-
-
-
--- LOGIN
---
--- TODO get rid of old sessions
-
-
-login : Cookies -> String -> String -> Transaction Cookies.Header
-login _ name password =
+login : Cookies -> Email -> Password -> Transaction Cookies.Header
+login _ email password =
   let
     user :=
-      access users Unrestricted
-        |> filter (\u -> u.name == name && Password.verify u.pw_hash password)
+      access users (HasPassword email password)
+        |> map .id
         |> select
 
+    secret := Uuid.generate SessionSecret
     created := Time.now
-    secret  := Uuid.generate SessionSecret
 
     () :=
-      insert sessions Unrestricted
-        { cookie = secret
-        , user = user.id
-        , expires = Time.plus 15 Minutes created
+      insert sessions (S_HasLogin user)
+        { secret = secret
+        , user = user
+        , created = created
         }
   in
-  succeed (toCookie secret)
-
-
-
--- LOGOUT
+  Transaction.succeed <| setCookie secret
 
 
 logout : Cookies -> Transaction Cookies.Header
 logout cookies =
-  case fromCookie cookies of
-    Nothing ->
-      succeed (Cookies.remove "u")
+  let
+    () :=
+      case getCookie cookies of
+        Nothing ->
+          Transaction.succeed ()
 
-    Just uuid ->
-      let
-        () := remove sessions Unrestricted (\s -> s.cookie == uuid)
-      in
-      succeed (Cookies.remove "u")
-
-
-
--- COOKIES
-
-
-toCookie : SessionSecret -> Cookies.Header
-toCookie (SessionSecret uuid) =
-  Cookies.set "u" (Uuid.toBase64 uuid) 15 Minutes
+        Just secret ->
+          let
+            time := Time.now
+          in
+          remove sessions (S_HasCookie secret time) <| \_ -> True
+  in
+  Transaction.succeed removeCookie
 
 
-fromCookie : Cookies -> Maybe SessionSecret
-fromCookie cookies =
-  Maybe.map SessionSecret <|
-    Cookies.get cookies "u" Uuid.fromBase64
+lookup : Cookies -> SessionSecret -> Transaction Info
+lookup _ secret =
+  let
+    user := requireSessionSecret secret
+  in
+  access users (HasSession user)
+    |> map toInfo
+    |> select
+
+
+requireSession : Cookies -> Transaction UserID
+requireSession cookies =
+  case getCookie cookies of
+    Just secret -> requireSessionSecret secret
+    Nothing     -> Transaction.fail
+
+
+requireSessionSecret : SessionSecret -> Transaction UserID
+requireSessionSecret secret =
+  let
+    time := Time.now
+  in
+  access sessions (S_HasCookie secret time)
+    |> map .user
+    |> select
 
 
 
--- TABLE SECURITY
+-- COOKIE HELPERS
 
 
-requireCookie : Cookies -> Transaction UserID
-requireCookie cookies =
-  case fromCookie cookies of
-    Just uuid ->
-      let
-        time := Time.now
-      in
-      access sessions Unrestricted
-        |> filter (\s -> s.cookie == uuid && time < s.expires)
-        |> map .user
+setCookie : SessionSecret -> Cookies.Header
+setCookie secret =
+  Cookies.set "u" (secretToString secret) 14 Days
+
+
+getCookie : Cookies -> Maybe SessionSecret
+getCookie cookies =
+  Cookies.get cookies "u" secretFromString
+
+
+removeCookie : Cookies.Header
+removeCookie =
+  Cookies.remove "u"
+
+
+secretToString : SessionSecret -> String
+secretToString (SessionSecret uuid) =
+  Uuid.toBase64 uuid
+
+
+secretFromString : String -> Maybe SessionSecret
+secretFromString str =
+  Maybe.map SessionSecret (Uuid.fromBase64 str)
+
+
+
+--------------------------------------------------------------------------------
+-- EMAIL SESSIONS --------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+
+
+-- SIGNUP SESSIONS
+
+
+type alias SignupSession =
+  { secret : EmailSecret
+  , email : Email
+  , pw_hash : Password.Hash
+  , created : Time.Posix
+  }
+
+
+type EmailSecret = EmailSecret Uuid.Uuid
+
+
+type EmailToken
+  = EmailInit Email
+  | EmailDone EmailSecret Time.Posix
+
+
+signupSessions : Table EmailToken SignupSession
+signupSessions :=
+  table
+    { primary = .secret
+    , indexes = []
+    , constraints = []
+    , security =
+        Security.policy
+          { access = \token session ->
+              case token of
+                EmailInit _           -> False
+                EmailDone secret time ->
+                  session.secret == secret
+                  && Time.minus 10 Minutes time < session.created
+
+          , insert = \token session ->
+              case token of
+                EmailInit email -> session.email == email
+                EmailDone _ _   -> False
+
+          , update = \token _ _ ->
+              case token of
+                EmailInit _   -> False
+                EmailDone _ _ -> False
+
+          , remove = \token session ->
+              case token of
+                EmailInit _        -> False
+                EmailDone secret _ -> session.secret == secret
+          }
+    }
+
+
+signupInit : Cookies -> Email -> Password -> Transaction EmailSecret
+signupInit _ email (Password password) =
+  let
+    secret  := Uuid.generate EmailSecret
+    pw_hash := Password.bcrypt password
+    created := Time.now
+
+    () :=
+      insert signupSessions (EmailInit email)
+        { secret = secret
+        , email = email
+        , pw_hash = pw_hash
+        , created = created
+        }
+  in
+  Transaction.succeed secret
+
+
+signupDone : Cookies -> EmailSecret -> Transaction (Info, SessionSecret)
+signupDone _ secret =
+  let
+    time := Time.now
+    session :=
+      access signupSessions (EmailDone secret time)
         |> select
 
-    Nothing ->
-      Transaction.fail
+    userID  := Seq.next userIDs
+    created := Time.now
+    cookie  := Uuid.generate SessionSecret
+    user =
+      { id = userID
+      , email = session.email
+      , pw_hash = session.pw_hash
+      , created = created
+      }
+
+    () := insert users (HasEmail session.email secret) user
+    () := insert sessions (S_HasLogin userID) { secret = cookie, user = userID, created = created }
+    () := remove signupSessions (EmailDone secret time) (\_ -> True)
+  in
+  Transaction.succeed (toInfo user, cookie)
+
 
