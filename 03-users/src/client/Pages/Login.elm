@@ -103,9 +103,13 @@ view : Model -> Browser.Document Msg
 view model =
   { title = "Log In"
   , body =
-      [ input [ type_ "text", placeholder "User Name", value model.email, onInput GotEmail ] []
+      [ input [ type_ "text", placeholder "Email", value model.email, onInput GotEmail ] []
       , input [ type_ "password", placeholder "Password", value model.password, onInput GotPassword ] []
       , input [ type_ "button", value "Log In", onClick Login ] []
-      , a [ href "/signup" ] [ text "Sign Up" ]
+      , p []
+          [ a [ href "/" ] [ text "Home" ]
+          , text " "
+          , a [ href "/signup" ] [ text "Sign Up" ]
+          ]
       ]
   }

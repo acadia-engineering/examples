@@ -117,18 +117,22 @@ view : Model -> Browser.Document Msg
 view model =
   { title = "Sign Up"
   , body =
-      [ input [ type_ "text", placeholder "User Name", value model.email, onInput GotEmail ] []
+      [ input [ type_ "text", placeholder "Email", value model.email, onInput GotEmail ] []
       , input [ type_ "password", placeholder "Password", value model.password, onInput GotPassword1 ] []
       , input [ type_ "password", placeholder "Retype Password", value model.password2, onInput GotPassword2 ] []
       , input [ type_ "button", value "Sign Up", disabled (not (isOkayPassword model.password model.password2)), onClick SignUp ] []
-      , a [ href "/login" ] [ text "Log In" ]
+      , p []
+          [ a [ href "/" ] [ text "Home" ]
+          , text " "
+          , a [ href "/login" ] [ text "Log In" ]
+          ]
       , case model.secret of
           Nothing -> text ""
           Just (Users.EmailSecret secret) ->
             let
               path = "/signup/" ++ Uuid.toHex secret
             in
-            span []
+            p []
               [ text "An email verification session has been created. Integrating with an email sending service is outside the scope of this example, so just pretend that you got this verification link through your email: "
               , a [ href path ] [ text path ]
               ]

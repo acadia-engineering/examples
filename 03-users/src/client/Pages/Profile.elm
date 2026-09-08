@@ -133,6 +133,7 @@ view model =
       , input [ type_ "text", placeholder "Origin", value model.origin, onInput GotOrigin ] []
       , input [ type_ "button", value "Add", onClick Add ] []
       , ul [] (List.map viewFood model.list)
+      , p [] [ a [ href "/logout" ] [ text "Log Out" ] ]
       ]
   }
 
