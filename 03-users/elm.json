@@ -4,7 +4,7 @@
         "src/client",
         "src/server",
         "gen/elm",
-        "elm-server-prototype/src"
+        "elm-simple-server/src/api"
     ],
     "elm-version": "0.19.2",
     "dependencies": {
